@@ -8,55 +8,13 @@ const PORT = process.env.PORT || 3000;
 const ANIME_BASE_URL = 'https://s11.nontonanimeid.boats';
 const DONGHUA_BASE_URL = 'https://anichin.moe';
 
-// PROXY CONFIGURATION
-const PROXY_URL = 'https://cors.caliph.my.id/';
-
-// Headers sesuai permintaan
-const DEFAULT_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-  'Accept-Language': 'en-US,en;q=0.9'
-};
-
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Helper function untuk membuat URL dengan proxy
-function getProxiedUrl(originalUrl) {
-    // Format: https://cors.caliph.my.id/URL
-    // Pastikan URL tidak mengandung proxy sebelumnya
-    if (originalUrl.includes(PROXY_URL)) {
-        return originalUrl;
-    }
-    return `${PROXY_URL}${originalUrl}`;
-}
-
-// Fungsi untuk fetch dengan proxy
-async function fetchWithProxy(url, options = {}) {
-    const headers = { ...DEFAULT_HEADERS, ...options.headers };
-    const proxiedUrl = getProxiedUrl(url);
-    
-    console.log(`Fetching with proxy: ${proxiedUrl}`);
-    
-    try {
-        const response = await axios.get(proxiedUrl, {
-            headers: headers,
-            timeout: 15000,
-            maxRedirects: 5,
-            validateStatus: function (status) {
-                return status >= 200 && status < 300;
-            }
-        });
-        
-        return response;
-    } catch (error) {
-        console.error(`Error fetching ${proxiedUrl}:`, error.message);
-        throw error;
-    }
-}
 
 // ============= ANIMEEEEEE =============
+
 
 // Fungsi untuk scrape data dari halaman
 async function scrapeLatestEpisodes(page = 1) {
@@ -70,8 +28,16 @@ async function scrapeLatestEpisodes(page = 1) {
         
         console.log(`Fetching: ${url}`);
         
-        const response = await fetchWithProxy(url);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Connection': 'keep-alive',
+            }
+        });
+        
+        const $ = cheerio.load(data);
         const animeList = [];
         
         // Selector untuk mengambil data dari posts
@@ -129,7 +95,7 @@ async function scrapeLatestEpisodes(page = 1) {
             });
         });
         
-        // Cek apakah ada next page
+        // Cek apakah ada next page (untuk mengetahui apakah masih bisa load more)
         const nextPage = $('a.next.page-numbers, .next.page-numbers, .pagination .next, .misha_loadmore.loadmore_button').length > 0 || 
                         $('.load_more').length > 0;
         
@@ -140,7 +106,7 @@ async function scrapeLatestEpisodes(page = 1) {
             data: animeList,
             pagination: {
                 current_page: page,
-                has_next_page: nextPage || totalFound >= 20,
+                has_next_page: nextPage || totalFound >= 20, // Asumsi jika ada 20 data, mungkin masih ada next page
                 next_page: nextPage ? page + 1 : null,
                 total_in_page: totalFound
             }
@@ -155,8 +121,13 @@ async function scrapeLatestEpisodes(page = 1) {
 // Fungsi untuk mendapatkan total pages (jika diperlukan)
 async function getTotalPages() {
     try {
-        const response = await fetchWithProxy(ANIME_BASE_URL);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(ANIME_BASE_URL, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         
         // Coba cari link pagination terakhir
         let lastPage = 1;
@@ -173,7 +144,7 @@ async function getTotalPages() {
         return {
             last_page: lastPage,
             has_load_more: hasLoadMore,
-            estimated_total_pages: hasLoadMore ? 999 : lastPage
+            estimated_total_pages: hasLoadMore ? 999 : lastPage // Jika ada load more, teorinya bisa infinite
         };
         
     } catch (error) {
@@ -192,6 +163,7 @@ app.get('/api/anime/latest', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         
+        // Validasi page
         if (page < 1) {
             return res.status(400).json({
                 success: false,
@@ -199,12 +171,16 @@ app.get('/api/anime/latest', async (req, res) => {
             });
         }
         
+        // Scrape data dari halaman yang diminta
         const result = await scrapeLatestEpisodes(page);
+        
+        // Ambil info total pages (opsional)
         const pagesInfo = await getTotalPages();
         
+        // Response JSON
         res.json({
             success: true,
-            data: result.data.slice(0, limit),
+            data: result.data.slice(0, limit), // Batasi sesuai limit
             pagination: {
                 ...result.pagination,
                 limit: limit,
@@ -216,10 +192,6 @@ app.get('/api/anime/latest', async (req, res) => {
                 name: 'NontonAnimeID',
                 url: ANIME_BASE_URL,
                 scraped_at: new Date().toISOString()
-            },
-            proxy: {
-                enabled: true,
-                url: PROXY_URL
             }
         });
         
@@ -229,23 +201,21 @@ app.get('/api/anime/latest', async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Gagal mengambil data dari sumber',
-            error: error.message,
-            proxy: {
-                enabled: true,
-                url: PROXY_URL
-            }
+            error: error.message
         });
     }
 });
 
-// /api/anime/latest/load-more
+// Endpoint untuk load more (AJAX style)
 app.get('/api/anime/latest/load-more', async (req, res) => {
     try {
-        const page = parseInt(req.query.page) || 2;
+        const page = parseInt(req.query.page) || 2; // Default ke page 2
         const accumulated = parseInt(req.query.accumulated) || 0;
         
+        // Scrape data dari halaman yang diminta
         const result = await scrapeLatestEpisodes(page);
         
+        // Response khusus untuk load more
         res.json({
             success: true,
             data: result.data,
@@ -273,7 +243,7 @@ app.get('/api/anime/latest/load-more', async (req, res) => {
     }
 });
 
-// /api/anime/latest/info
+// Endpoint untuk info pagination
 app.get('/api/anime/latest/info', async (req, res) => {
     try {
         const pagesInfo = await getTotalPages();
@@ -301,7 +271,7 @@ app.get('/api/anime/latest/info', async (req, res) => {
     }
 });
 
-// /api/anime/detail/:slug
+// /api/anime/detail/peter-grill-to-kenja-no-jikan
 app.get('/api/anime/detail/:slug', async (req, res) => {
     try {
         const { slug } = req.params;
@@ -309,8 +279,28 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
         
         console.log(`Fetching detail: ${animeUrl}`);
         
-        const response = await fetchWithProxy(animeUrl);
-        const $ = cheerio.load(response.data);
+        // Tambahkan header lebih lengkap agar terlihat seperti browser asli
+        const { data } = await axios.get(animeUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'cross-site',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+                'Connection': 'keep-alive'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         
         // Ambil judul anime
         const title = $('h1.entry-title.cs').text().trim() || 
@@ -321,6 +311,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
         let thumbnail = $('.anime-card__sidebar img').attr('src') || 
                        $('meta[property="og:image"]').attr('content');
         
+        // Perbaiki URL thumbnail
         if (thumbnail) {
             if (thumbnail.startsWith('//')) {
                 thumbnail = 'https:' + thumbnail;
@@ -336,12 +327,12 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                       $('.kotakscore').first().text().trim() ||
                       $('span[itemprop="ratingValue"]').text().trim();
         
-        // Ambil tipe
+        // Ambil tipe (TV, Movie, dll)
         const type = $('.anime-card__score .type').text().trim() ||
                     $('.info-item.type').text().trim() ||
                     $('.series-type').text().trim();
         
-        // Ambil sinopsis
+        // Ambil sinopsis dari tab
         let synopsis = '';
         $('#tab-synopsis .synopsis-prose p').each((i, el) => {
             synopsis += $(el).text().trim() + ' ';
@@ -354,7 +345,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                       '';
         }
         
-        // Ambil detail
+        // Ambil detail dari tab Details
         const details = {};
         
         $('.details-list li, .anime-info li, .info-list li').each((i, el) => {
@@ -369,7 +360,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
             }
         });
         
-        // Ambil judul alternatif
+        // Ambil judul alternatif (English)
         const englishTitle = details['English'] || 
                             $('.details-list li:contains("English:")').text().replace('English:', '').trim() ||
                             $('strong.detail-label:contains("English")').parent().text().replace('English:', '').trim();
@@ -388,7 +379,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
             }
         });
         
-        // Ambil quick info
+        // Ambil informasi quick info (status, episode, durasi, season)
         const quickInfo = {
             status: null,
             episodes: null,
@@ -409,6 +400,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
             }
         });
         
+        // Ambil dari meta tags sebagai cadangan
         if (!quickInfo.episodes) {
             const episodeCount = $('meta[property="og:video:series"]').attr('content') || 
                                $('.total-episodes').text().trim() ||
@@ -434,9 +426,11 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                               $(el).find('.date').text().trim() ||
                               '';
             
+            // Ambil nomor episode dari title
             let episodeNumber = episodeTitle.replace(/[^0-9]/g, '');
             if (!episodeNumber) episodeNumber = (i + 1).toString();
             
+            // Ambil slug episode
             const episodeSlug = episodeUrl ? episodeUrl.replace(`${ANIME_BASE_URL}/`, '').replace('/', '') : '';
             
             episodes.push({
@@ -449,7 +443,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
             });
         });
         
-        // Ambil dari script JSON LD
+        // Ambil dari script JSON LD dengan safe handling
         let jsonData = null;
         $('script[type="application/ld+json"]').each((i, el) => {
             try {
@@ -457,9 +451,12 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                 if (content && (content.includes('TVSeries') || content.includes('Movie'))) {
                     jsonData = JSON.parse(content);
                 }
-            } catch (e) {}
+            } catch (e) {
+                // Abaikan error parsing JSON
+            }
         });
         
+        // Gunakan data dari JSON jika ada dan valid
         if (jsonData && jsonData.episode && Array.isArray(jsonData.episode)) {
             const jsonEpisodes = jsonData.episode.map(ep => ({
                 episode: ep.episodeNumber || ep.position || '',
@@ -468,18 +465,20 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                 slug: ep.url ? ep.url.replace(`${ANIME_BASE_URL}/`, '').replace('/', '') : ''
             }));
             
+            // Gabungkan dengan episodes yang sudah ada, prioritaskan dari HTML
             if (episodes.length === 0 && jsonEpisodes.length > 0) {
                 episodes.push(...jsonEpisodes);
             }
         }
         
+        // Urutkan episodes berdasarkan nomor (descending/biar episode terbaru di atas)
         episodes.sort((a, b) => {
             const numA = parseInt(a.episode) || 0;
             const numB = parseInt(b.episode) || 0;
             return numB - numA;
         });
         
-        // Ambil rekomendasi
+        // Ambil rekomendasi series
         const recommendations = [];
         $('.related .as-anime-card, .recommendations .anime-card, .series-related .item').each((i, el) => {
             const recUrl = $(el).attr('href') || $(el).find('a').attr('href');
@@ -520,6 +519,7 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
             }
         });
         
+        // Response JSON
         res.json({
             success: true,
             data: {
@@ -543,9 +543,9 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
                 popularity: details['Popularity'] || null,
                 members: details['Members'] || null,
                 trailer: trailerUrl || null,
-                episodes: episodes.slice(0, 50),
+                episodes: episodes.slice(0, 50), // Batasi 50 episode teratas
                 total_episodes_found: episodes.length,
-                recommendations: recommendations.slice(0, 10)
+                recommendations: recommendations.slice(0, 10) // Batasi 10 rekomendasi
             },
             source: {
                 name: 'NontonAnimeID',
@@ -581,27 +581,42 @@ app.get('/api/anime/detail/:slug', async (req, res) => {
     }
 });
 
-// /api/anime/watch/:animeSlug/:episodeSlug?
+// /api/anime/watch/mato-seihei-no-slave-2-episode-5
 app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
     try {
         const { animeSlug, episodeSlug } = req.params;
         
+        // Tentukan URL episode
         let episodeUrl;
         if (episodeSlug) {
+            // Format: /api/anime/watch/mato-seihei-no-slave-2/episode-5
             episodeUrl = `${ANIME_BASE_URL}/${episodeSlug}/`;
         } else {
+            // Jika hanya animeSlug, asumsikan itu adalah slug episode lengkap
             episodeUrl = `${ANIME_BASE_URL}/${animeSlug}/`;
         }
         
         console.log(`Fetching episode: ${episodeUrl}`);
         
-        const response = await fetchWithProxy(episodeUrl);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(episodeUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         
         // ============= DATA EPISODE =============
+        // Ambil judul episode
         const title = $('h1.entry-title').text().trim() || 
                      $('title').text().replace(' - Nonton Anime ID', '').trim();
         
+        // Ambil thumbnail episode
         let thumbnail = $('meta[property="og:image"]').attr('content') || 
                        $('.featuredimgs img').attr('src') ||
                        $('img[alt*="Episode"]').attr('src');
@@ -610,6 +625,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             thumbnail = 'https:' + thumbnail;
         }
         
+        // Ambil informasi episode dari JSON LD
         let episodeInfo = {};
         $('script[type="application/ld+json"]').each((i, el) => {
             try {
@@ -626,6 +642,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             } catch (e) {}
         });
         
+        // Ambil daftar server video
         const servers = [];
         $('.tabs1.player li.tab-link.serverplayer').each((i, el) => {
             const serverId = $(el).attr('id');
@@ -641,6 +658,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             });
         });
         
+        // Ambil embed URL dari iframe
         let embedUrl = null;
         const activeIframe = $('#videoku iframe, .player_embed iframe').first();
         if (activeIframe.length) {
@@ -657,6 +675,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             });
         }
         
+        // Ambil link download
         const downloadLinks = [];
         $('#download_area .listlink a, .download-links a').each((i, el) => {
             const linkUrl = $(el).attr('href');
@@ -671,6 +690,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             });
         });
         
+        // Ambil navigasi episode
         const navigation = {
             prev: null,
             next: null,
@@ -702,6 +722,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             }
         });
         
+        // Ambil tracking data
         let trackingData = {};
         $('script').each((i, el) => {
             const scriptContent = $(el).html();
@@ -718,6 +739,8 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             }
         });
         
+        // ============= DATA DETAIL ANIME =============
+        // Dapatkan series slug dari navigation atau tracking
         const seriesSlug = navigation.all_episodes?.slug || 
                           trackingData.seriesUrl?.split('/anime/')[1]?.replace('/', '') || 
                           animeSlug;
@@ -734,14 +757,21 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
             duration: null
         };
         
+        // Jika ada series slug, scrape detail anime
         if (seriesSlug) {
             try {
                 const seriesUrl = `${ANIME_BASE_URL}/anime/${seriesSlug}/`;
                 console.log(`Fetching anime detail: ${seriesUrl}`);
                 
-                const seriesResponse = await fetchWithProxy(seriesUrl);
+                const seriesResponse = await axios.get(seriesUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+                
                 const $series = cheerio.load(seriesResponse.data);
                 
+                // Ambil sinopsis
                 let synopsis = '';
                 $series('#tab-synopsis .synopsis-prose p, .synopsis-prose p, .entry-content p').each((i, el) => {
                     synopsis += $series(el).text().trim() + ' ';
@@ -751,6 +781,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                     synopsis = $series('meta[name="description"]').attr('content') || '';
                 }
                 
+                // Ambil genre
                 const genres = [];
                 $series('.anime-card__genres .genre-tag, .genres a, .genre-item').each((i, el) => {
                     const genre = $series(el).text().trim();
@@ -759,9 +790,11 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                     }
                 });
                 
+                // Ambil rating
                 const rating = $series('.anime-card__score .value').text().trim() ||
                               $series('.kotakscore').first().text().trim();
                 
+                // Ambil status, studio, dll dari details
                 let studio = null;
                 let status = null;
                 let aired = null;
@@ -780,6 +813,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                     }
                 });
                 
+                // Jika tidak ditemukan, coba dari quick info
                 if (!status) {
                     $series('.anime-card__quick-info .info-item').each((i, el) => {
                         const text = $series(el).text().trim();
@@ -789,6 +823,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                     });
                 }
                 
+                // Ambil daftar episode lengkap
                 const episodes = [];
                 $series('.episode-list-items .episode-item, .list-episode a').each((i, el) => {
                     const episodeUrl = $series(el).attr('href');
@@ -809,16 +844,18 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                         slug: episodeSlug,
                         url: episodeUrl,
                         date: episodeDate,
-                        is_current: episodeUrl === episodeUrl
+                        is_current: episodeUrl === episodeUrl // Tandai episode yang sedang ditonton
                     });
                 });
                 
+                // Urutkan episodes berdasarkan nomor (descending)
                 episodes.sort((a, b) => {
                     const numA = parseInt(a.episode) || 0;
                     const numB = parseInt(b.episode) || 0;
                     return numB - numA;
                 });
                 
+                // Tandai episode yang sedang aktif
                 const currentEpisodeUrl = episodeUrl;
                 episodes.forEach(ep => {
                     ep.is_current = ep.url === currentEpisodeUrl;
@@ -826,7 +863,7 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                 
                 animeDetail = {
                     synopsis: synopsis.trim(),
-                    episodes: episodes.slice(0, 50),
+                    episodes: episodes.slice(0, 50), // Batasi 50 episode
                     total_episodes: episodes.length,
                     genres: genres,
                     status: status,
@@ -838,9 +875,11 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
                 
             } catch (error) {
                 console.log('Gagal mengambil detail anime:', error.message);
+                // Tetap lanjutkan dengan data episode saja
             }
         }
         
+        // Response JSON dengan detail anime
         res.json({
             success: true,
             data: {
@@ -911,21 +950,34 @@ app.get('/api/anime/watch/:animeSlug/:episodeSlug?', async (req, res) => {
     }
 });
 
+
+
+
+
+
+
+
 // ============= DONGHUAAAAA =============
 
 function cleanSeriesSlug(url) {
+    // Contoh input: /martial-god-asura-season-2-episode-03-subtitle-indonesia/
+    // Output: /martial-god-asura-season-2/
+    
+    // Hapus base URL jika ada
     let slug = url.replace(DONGHUA_BASE_URL, '').replace(/^\//, '').replace(/\/$/, '');
     
+    // Pola untuk mendeteksi dan menghapus bagian episode
+    // Episode bisa dalam format: -episode-123, -ep-123, -episode-123-subtitle-indonesia, dll
     const episodePatterns = [
-        /-episode-\d+-.*$/,
-        /-ep-\d+-.*$/,
-        /-episode-\d+$/,
-        /-ep-\d+$/,
-        /-episode-\d+-tamat.*$/,
-        /-eps-\d+-.*$/,
-        /-ep-\d+-tamat.*$/,
-        /\d+-subtitle-indonesia$/,
-        /-subtitle-indonesia$/,
+        /-episode-\d+-.*$/,      // -episode-03-subtitle-indonesia
+        /-ep-\d+-.*$/,           // -ep-03-subtitle-indonesia
+        /-episode-\d+$/,         // -episode-03
+        /-ep-\d+$/,              // -ep-03
+        /-episode-\d+-tamat.*$/, // -episode-12-tamat
+        /-eps-\d+-.*$/,          // -eps-03-subtitle-indonesia
+        /-ep-\d+-tamat.*$/,      // -ep-12-tamat
+        /\d+-subtitle-indonesia$/, // 03-subtitle-indonesia
+        /-subtitle-indonesia$/,  // -subtitle-indonesia
     ];
     
     let cleanedSlug = slug;
@@ -936,15 +988,18 @@ function cleanSeriesSlug(url) {
         }
     }
     
+    // Jika masih ada pola episode yang tersisa, coba hapus dengan regex umum
     if (cleanedSlug.match(/-\d+$/) || cleanedSlug.match(/-\d+-/)) {
         cleanedSlug = cleanedSlug.replace(/-\d+.*$/, '');
     }
     
+    // Pastikan tidak ada trailing slash
     return cleanedSlug.replace(/\/$/, '');
 }
 
 async function scrapeLatestDonghua(page = 1) {
     try {
+        // Tentukan URL berdasarkan page
         let url = DONGHUA_BASE_URL;
         if (page > 1) {
             url = `${DONGHUA_BASE_URL}/page/${page}/`;
@@ -952,20 +1007,31 @@ async function scrapeLatestDonghua(page = 1) {
         
         console.log(`Fetching donghua page ${page}: ${url}`);
         
-        const response = await fetchWithProxy(url);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         const latestDonghua = [];
         
+        // Ambil dari section Latest Release (listupd normal)
         $('.listupd.normal .excstf article.bs').each((index, element) => {
             const $el = $(element);
             const link = $el.find('a').first();
             const href = link.attr('href') || '';
             const title = link.attr('title') || '';
             
+            // Ambil judul series
             const seriesTitle = $el.find('.tt').text().trim() || 
                                $el.find('h2').text().trim() ||
                                title;
             
+            // Ambil thumbnail
             let thumbnail = $el.find('img').attr('src') || $el.find('img').attr('data-src');
             if (thumbnail) {
                 if (thumbnail.includes('i0.wp.com') && !thumbnail.startsWith('http')) {
@@ -977,14 +1043,19 @@ async function scrapeLatestDonghua(page = 1) {
                 }
             }
             
+            // Ambil episode (untuk info saja)
             const episode = $el.find('.bt .epx').text().trim() || 'Latest';
             const episodeNumber = episode.replace('Ep', '').trim();
             
+            // Ambil status
             const isHot = $el.find('.hotbadge').length > 0;
             const type = $el.find('.typez').text().trim() || 'Donghua';
             const status = $el.find('.status').text().trim() || '';
             
+            // Bersihkan slug untuk mendapatkan URL series (bukan episode)
             const seriesSlug = cleanSeriesSlug(href);
+            
+            // Buat URL series yang benar
             const seriesUrl = `${DONGHUA_BASE_URL}/${seriesSlug}/`;
             
             latestDonghua.push({
@@ -992,8 +1063,8 @@ async function scrapeLatestDonghua(page = 1) {
                 latest_episode: episodeNumber,
                 episode_raw: episode,
                 slug: seriesSlug,
-                url: seriesUrl,
-                original_url: href,
+                url: seriesUrl, // URL ke halaman detail series
+                original_url: href, // URL asli ke episode (untuk referensi)
                 thumbnail: thumbnail || null,
                 type: type,
                 status: status,
@@ -1002,12 +1073,14 @@ async function scrapeLatestDonghua(page = 1) {
             });
         });
         
+        // Jika tidak ada data dari selector pertama, coba selector alternatif
         if (latestDonghua.length === 0) {
             $('article.bs, .bs').each((index, element) => {
                 const $el = $(element);
                 const link = $el.find('a').first();
                 const href = link.attr('href') || '';
                 
+                // Skip jika bukan link donghua
                 if (!href || href.includes('#') || href === '') return;
                 
                 const title = link.attr('title') || '';
@@ -1033,6 +1106,7 @@ async function scrapeLatestDonghua(page = 1) {
                 const isHot = $el.find('.hotbadge').length > 0;
                 const type = $el.find('.typez').text().trim() || 'Donghua';
                 
+                // Bersihkan slug untuk mendapatkan URL series
                 const seriesSlug = cleanSeriesSlug(href);
                 const seriesUrl = `${DONGHUA_BASE_URL}/${seriesSlug}/`;
                 
@@ -1052,6 +1126,7 @@ async function scrapeLatestDonghua(page = 1) {
             });
         }
         
+        // Hilangkan duplikat berdasarkan slug (karena bisa jadi series yang sama muncul di beberapa episode)
         const uniqueDonghua = [];
         const seenSlugs = new Set();
         
@@ -1062,10 +1137,12 @@ async function scrapeLatestDonghua(page = 1) {
             }
         }
         
+        // Cek apakah ada next page
         const hasNextPage = $('a.next.page-numbers, .next.page-numbers, .pagination .next, .hpage .r').length > 0 ||
                            $('.hpage a.r').length > 0 ||
                            $('a:contains("Next")').length > 0;
         
+        // Ambil nomor halaman terakhir jika ada
         let lastPage = page;
         $('.page-numbers:not(.next)').each((i, el) => {
             const pageNum = parseInt($(el).text().trim());
@@ -1097,6 +1174,7 @@ app.get('/api/donghua/latest', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         
+        // Validasi page
         if (page < 1) {
             return res.status(400).json({
                 success: false,
@@ -1106,11 +1184,17 @@ app.get('/api/donghua/latest', async (req, res) => {
         
         const result = await scrapeLatestDonghua(page);
         
+        // Ambil data movie dari halaman pertama saja
         let latestMovies = [];
         if (page === 1) {
             try {
-                const response = await fetchWithProxy(DONGHUA_BASE_URL);
-                const $ = cheerio.load(response.data);
+                const { data } = await axios.get(DONGHUA_BASE_URL, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                });
+                
+                const $ = cheerio.load(data);
                 
                 $('.bixbox .listupd .excstf article.bs').each((index, element) => {
                     if (index < 5) {
@@ -1133,6 +1217,7 @@ app.get('/api/donghua/latest', async (req, res) => {
                         const type = $el.find('.typez').text().trim() || '';
                         const status = $el.find('.status').text().trim() || '';
                         
+                        // Untuk movie, kita juga bersihkan slug
                         const movieSlug = cleanSeriesSlug(href);
                         const movieUrl = `${DONGHUA_BASE_URL}/${movieSlug}/`;
                         
@@ -1175,10 +1260,6 @@ app.get('/api/donghua/latest', async (req, res) => {
                 name: 'Anichin',
                 url: page === 1 ? DONGHUA_BASE_URL : `${DONGHUA_BASE_URL}/page/${page}/`,
                 scraped_at: new Date().toISOString()
-            },
-            proxy: {
-                enabled: true,
-                url: PROXY_URL
             }
         });
         
@@ -1209,7 +1290,7 @@ app.get('/api/donghua/latest', async (req, res) => {
     }
 });
 
-// /api/donghua/detail/:slug
+// /api/donghua/detail/over-goddess/
 app.get('/api/donghua/detail/:slug', async (req, res) => {
     try {
         const { slug } = req.params;
@@ -1217,15 +1298,27 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
         
         console.log(`Fetching donghua detail: ${donghuaUrl}`);
         
-        const response = await fetchWithProxy(donghuaUrl);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(donghuaUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/'
+            }
+        });
         
+        const $ = cheerio.load(data);
+        
+        // ========== INFO DASAR ==========
+        // Judul
         const title = $('h1.entry-title').text().trim() || 
                      $('.infox h1').text().trim() ||
                      $('title').text().replace(' - Anichin', '').trim();
         
+        // Judul alternatif (dari span.alter)
         const alternativeTitle = $('.mindesc .alter').text().trim() || '';
         
+        // Thumbnail
         let thumbnail = $('meta[property="og:image"]').attr('content') || 
                        $('.thumb img').attr('src') ||
                        $('.bigcover .ime img').attr('src');
@@ -1238,18 +1331,22 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             }
         }
         
+        // Rating
         let rating = $('.rating strong').text().replace('Rating', '').trim() || 
                     $('.numscore').text().trim() ||
                     $('meta[itemprop="ratingValue"]').attr('content');
         
+        // Followers
         const followers = $('.bmc').text().replace('Followed', '').replace('people', '').trim() || '';
         
+        // Sinopsis
         let synopsis = '';
         $('.entry-content p, .desc p, .synp .entry-content p').each((i, el) => {
             synopsis += $(el).text().trim() + '\n\n';
         });
         synopsis = synopsis.trim();
         
+        // ========== INFORMASI DETAIL ==========
         const details = {};
         
         $('.info-content .spe span').each((i, el) => {
@@ -1259,25 +1356,52 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
                 const cleanKey = key.replace(/[^a-zA-Z0-9 ]/g, '').trim();
                 details[cleanKey] = value.trim();
             } else if (text.includes('by:')) {
+                // Handle special case untuk posted by
                 const parts = text.split('by:');
                 details['Posted by'] = parts[1]?.trim() || '';
             }
         });
         
+        // Ambil status dari details atau dari elemen lain
         const status = details['Status'] || $('.status').text().trim() || 'Unknown';
+        
+        // Studio
         const studio = details['Studio'] || '';
+        
+        // Network/Channel
         const network = details['Network'] || '';
+        
+        // Released date
         const released = details['Released'] || '';
+        
+        // Duration
         const duration = details['Duration'] || '';
+        
+        // Season
         const season = details['Season'] || '';
+        
+        // Country
         const country = details['Country'] || '';
+        
+        // Type (Donghua, Movie, etc)
         const type = details['Type'] || $('.typez').first().text().trim() || 'Donghua';
+        
+        // Total episodes
         const totalEpisodes = details['Episodes'] || '';
+        
+        // Fansub
         const fansub = details['Fansub'] || '';
+        
+        // Posted by
         const postedBy = details['Posted by'] || '';
+        
+        // Released on (date)
         const releasedOn = details['Released on'] || '';
+        
+        // Updated on
         const updatedOn = details['Updated on'] || '';
         
+        // ========== GENRES ==========
         const genres = [];
         $('.genxed a, .genres a, .tags a').each((i, el) => {
             const genre = $(el).text().trim();
@@ -1286,6 +1410,7 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             }
         });
         
+        // ========== TAGS ==========
         const tags = [];
         $('.bottom.tags a, .tags-links a').each((i, el) => {
             const tag = $(el).text().trim();
@@ -1294,8 +1419,10 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             }
         });
         
+        // ========== EPISODE LIST ==========
         const episodes = [];
         
+        // Dari daftar episode
         $('.eplister ul li').each((i, el) => {
             const link = $(el).find('a');
             const href = link.attr('href') || '';
@@ -1304,6 +1431,7 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             const episodeDate = $(el).find('.epl-date').text().trim();
             const subStatus = $(el).find('.epl-sub .status').text().trim() || 'Sub';
             
+            // Buat slug episode
             let episodeSlug = href.replace(DONGHUA_BASE_URL, '').replace(/^\//, '').replace(/\/$/, '');
             
             episodes.push({
@@ -1316,12 +1444,14 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             });
         });
         
+        // Jika tidak ada dari selector pertama, coba selector alternatif
         if (episodes.length === 0) {
             $('.list-episode li, .episodelist li').each((i, el) => {
                 const link = $(el).find('a');
                 const href = link.attr('href') || '';
                 const episodeText = link.text().trim();
                 
+                // Coba ekstrak nomor episode
                 let episodeNum = '';
                 const match = episodeText.match(/Episode\s+(\d+)/i) || episodeText.match(/Ep\s+(\d+)/i);
                 if (match) {
@@ -1341,18 +1471,21 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             });
         }
         
+        // Urutkan episodes berdasarkan nomor (descending - episode terbaru di atas)
         episodes.sort((a, b) => {
             const numA = parseInt(a.episode) || 0;
             const numB = parseInt(b.episode) || 0;
             return numB - numA;
         });
         
+        // ========== NAVIGASI FIRST/LAST EPISODE ==========
         const firstEpisode = episodes.length > 0 ? episodes[episodes.length - 1] : null;
         const latestEpisode = episodes.length > 0 ? episodes[0] : null;
         
+        // ========== RECOMMENDATIONS ==========
         const recommendations = [];
         $('.listupd article.bs, .recommended article.bs').each((i, el) => {
-            if (i < 5) {
+            if (i < 5) { // Ambil 5 rekomendasi
                 const link = $(el).find('a').first();
                 const href = link.attr('href') || '';
                 const title = $(el).find('.tt').text().trim() || 
@@ -1380,9 +1513,11 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
             }
         });
         
+        // ========== RESPONSE ==========
         res.json({
             success: true,
             data: {
+                // Info dasar
                 title: title,
                 alternative_title: alternativeTitle,
                 slug: slug,
@@ -1390,6 +1525,8 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
                 rating: rating,
                 followers: followers,
                 synopsis: synopsis,
+                
+                // Detail info
                 status: status,
                 type: type,
                 studio: studio,
@@ -1403,12 +1540,18 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
                 posted_by: postedBy,
                 released_on: releasedOn,
                 updated_on: updatedOn,
+                
+                // Genres & Tags
                 genres: genres,
                 tags: tags,
+                
+                // Episode info
                 episodes: episodes,
                 total_episodes_found: episodes.length,
                 first_episode: firstEpisode,
                 latest_episode: latestEpisode,
+                
+                // Rekomendasi
                 recommendations: recommendations
             },
             source: {
@@ -1445,7 +1588,7 @@ app.get('/api/donghua/detail/:slug', async (req, res) => {
     }
 });
 
-// /api/donghua/watch/:slug
+// /api/donghua/watch/soul-land-2-the-unrivaled-tang-sect-episode-131-subtitle-indonesia
 app.get('/api/donghua/watch/:slug', async (req, res) => {
     try {
         const { slug } = req.params;
@@ -1453,13 +1596,24 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
         
         console.log(`Fetching donghua episode: ${episodeUrl}`);
         
-        const response = await fetchWithProxy(episodeUrl);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(episodeUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/'
+            }
+        });
         
+        const $ = cheerio.load(data);
+        
+        // ========== INFO EPISODE ==========
+        // Judul episode
         const title = $('h1.entry-title').text().trim() || 
                      $('meta[property="og:title"]').attr('content') ||
                      $('title').text().replace(' - Anichin', '').trim();
         
+        // Thumbnail episode
         let thumbnail = $('meta[property="og:image"]').attr('content') || 
                        $('.tb img').attr('src') ||
                        $('.thumb img').attr('src');
@@ -1472,27 +1626,37 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             }
         }
         
+        // Deskripsi
         const description = $('meta[name="description"]').attr('content') || '';
         
+        // Tanggal rilis
         const releaseDate = $('meta[property="article:published_time"]').attr('content') || 
                            $('.updated').first().text().trim() ||
                            $('.year span').text().replace('Released on', '').trim();
         
+        // Posted by
         const postedBy = $('.vcard.author .fn a').text().trim() || 
                         $('.year .vcard.author').text().replace('Posted by', '').trim() ||
                         $('meta[property="article:author"]').attr('content')?.split('/').pop() || 'Anichin';
         
+        // ========== SERVER STREAMING ==========
         const servers = [];
         
+        // Ambil dari select dropdown mirror
         $('select.mirror option').each((i, el) => {
             const value = $(el).attr('value');
             const text = $(el).text().trim();
+            const dataIndex = $(el).attr('data-index');
             
+            // Skip option pertama yang kosong
             if (i > 0 && value) {
+                // Decode base64 untuk mendapatkan iframe URL
                 let embedUrl = null;
                 try {
                     if (value) {
+                        // Base64 decode
                         const decoded = Buffer.from(value, 'base64').toString('utf-8');
+                        // Extract src dari iframe
                         const srcMatch = decoded.match(/src=["'](.*?)["']/);
                         if (srcMatch && srcMatch[1]) {
                             embedUrl = srcMatch[1];
@@ -1505,12 +1669,13 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
                 servers.push({
                     name: text,
                     embed_url: embedUrl,
-                    original_value: value,
-                    is_active: i === 1
+                    original_value: value, // Base64 encoded
+                    is_active: i === 1 // Server pertama sebagai active (kecuali option kosong)
                 });
             }
         });
         
+        // Jika tidak ada dari select, coba dari iframe langsung
         if (servers.length === 0) {
             const iframeSrc = $('#pembed iframe, .player-embed iframe').attr('src');
             if (iframeSrc) {
@@ -1523,6 +1688,7 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             }
         }
         
+        // ========== INFO SERIES (DARI SIDEBAR) ==========
         const seriesInfo = {
             title: $('.headlist .det h2 a').text().trim() || 
                    $('.single-info .infox h2').text().trim() ||
@@ -1539,10 +1705,12 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             episode_progress: $('.headlist .det span').text().trim() || ''
         };
         
+        // Ambil slug series dari URL
         if (seriesInfo.series_url) {
             seriesInfo.series_slug = seriesInfo.series_url.replace(DONGHUA_BASE_URL, '').replace(/^\//, '').replace(/\/$/, '');
         }
         
+        // ========== NAVIGASI EPISODE ==========
         const navigation = {
             prev: null,
             next: null,
@@ -1575,9 +1743,11 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             }
         });
         
+        // ========== DAFTAR EPISODE (DARI SIDEBAR) ==========
         const episodeList = [];
         let currentEpisode = '';
         
+        // Ambil nomor episode saat ini
         const currentEpisodeMatch = title.match(/Episode\s+(\d+)/i);
         if (currentEpisodeMatch) {
             currentEpisode = currentEpisodeMatch[1];
@@ -1588,23 +1758,28 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             const href = link.attr('href') || '';
             const isSelected = $(el).hasClass('selected');
             
+            // Thumbnail episode
             let epThumbnail = $(el).find('.thumbnel img').attr('src');
             if (epThumbnail && epThumbnail.startsWith('//')) {
                 epThumbnail = 'https:' + epThumbnail;
             }
             
+            // Judul episode
             const epTitle = $(el).find('.playinfo h3').text().trim() || 
                            link.attr('title') ||
                            '';
             
+            // Info episode (Eps dan tanggal)
             const epInfo = $(el).find('.playinfo span').text().trim() || '';
             
+            // Extract episode number
             let epNumber = '';
             const epMatch = epInfo.match(/Eps?\s+(\d+)/i) || epTitle.match(/Episode\s+(\d+)/i);
             if (epMatch) {
                 epNumber = epMatch[1];
             }
             
+            // Extract tanggal
             let epDate = '';
             const dateMatch = epInfo.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/i);
             if (dateMatch) {
@@ -1622,12 +1797,14 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             });
         });
         
+        // Urutkan episodes berdasarkan nomor (descending)
         episodeList.sort((a, b) => {
             const numA = parseInt(a.episode) || 0;
             const numB = parseInt(b.episode) || 0;
             return numB - numA;
         });
         
+        // ========== DOWNLOAD LINKS ==========
         const downloadLinks = [];
         
         $('.soraddlx .soraurlx').each((i, el) => {
@@ -1645,12 +1822,14 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             }
         });
         
+        // Jika tidak ada dari selector pertama, coba selector alternatif
         if (downloadLinks.length === 0) {
             $('.mctnx .soraurlx, .download-links a').each((i, el) => {
                 const $el = $(el);
                 const url = $el.attr('href');
                 const text = $el.text().trim();
                 
+                // Coba deteksi quality dari teks
                 let quality = 'Unknown';
                 if (text.match(/360p|480p|720p|1080p|4K/i)) {
                     quality = text.match(/(360p|480p|720p|1080p|4K)/i)[0];
@@ -1666,12 +1845,14 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             });
         }
         
+        // ========== INFO TAMBAHAN DARI DESKRIPSI ==========
         const additionalInfo = {
             note: $('.announ').last().text().trim() || '',
             description_note: $('.bixbox.infx p').text().trim() || '',
             keywords: $('.bixbox.mctn h5').text().trim() || ''
         };
         
+        // ========== RECOMMENDATIONS ==========
         const recommendations = [];
         $('.listupd article.bs, .recommended article.bs').each((i, el) => {
             if (i < 5) {
@@ -1704,9 +1885,11 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
             }
         });
         
+        // ========== RESPONSE ==========
         res.json({
             success: true,
             data: {
+                // Info episode saat ini
                 current_episode: {
                     title: title,
                     slug: slug,
@@ -1717,15 +1900,21 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
                     posted_by: postedBy,
                     episode_number: currentEpisode
                 },
+                
+                // Streaming servers
                 streaming: {
                     servers: servers,
                     total_servers: servers.length,
                     current_server: servers.find(s => s.is_active) || (servers.length > 0 ? servers[0] : null)
                 },
+                
+                // Download links
                 download: {
                     links: downloadLinks,
                     total_links: downloadLinks.length
                 },
+                
+                // Series info
                 series: {
                     title: seriesInfo.title,
                     slug: seriesInfo.series_slug,
@@ -1735,10 +1924,18 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
                     episode_progress: seriesInfo.episode_progress,
                     total_episodes: episodeList.length
                 },
+                
+                // Navigation
                 navigation: navigation,
+                
+                // Episode list
                 episode_list: episodeList,
                 total_episodes: episodeList.length,
+                
+                // Additional info
                 additional_info: additionalInfo,
+                
+                // Recommendations
                 recommendations: recommendations
             },
             source: {
@@ -1775,21 +1972,32 @@ app.get('/api/donghua/watch/:slug', async (req, res) => {
     }
 });
 
+
 // ============= FUNGSI SEARCH =============
 async function searchAnime(query, page = 1) {
     try {
         const searchUrl = `${ANIME_BASE_URL}/page/${page}/?s=${encodeURIComponent(query)}`;
         console.log(`Searching anime: ${searchUrl}`);
         
-        const response = await fetchWithProxy(searchUrl);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         const results = [];
         
+        // Selector untuk hasil pencarian
         $('.archive .as-anime-card').each((i, el) => {
             const $el = $(el);
             const link = $el.attr('href') || '';
             const title = $el.find('.as-anime-title').text().trim();
             
+            // Ambil thumbnail
             let thumbnail = $el.find('img').attr('src') || $el.find('img').attr('data-src');
             if (thumbnail) {
                 if (thumbnail.startsWith('//')) {
@@ -1799,16 +2007,25 @@ async function searchAnime(query, page = 1) {
                 }
             }
             
+            // Ambil rating
             const rating = $el.find('.as-rating .icon').parent().text().replace('⭐', '').trim();
+            
+            // Ambil type
             const type = $el.find('.as-type .icon').parent().text().replace('📺', '').trim() || 'Anime';
+            
+            // Ambil season
             const season = $el.find('.as-season .icon').parent().text().replace('📅', '').trim();
+            
+            // Ambil sinopsis singkat
             const synopsis = $el.find('.as-synopsis').text().trim();
             
+            // Ambil genres
             const genres = [];
             $el.find('.as-genre-tag').each((i, genreEl) => {
                 genres.push($(genreEl).text().trim());
             });
             
+            // Ambil slug dari URL
             let slug = link.replace(ANIME_BASE_URL, '').replace(/^\//, '').replace(/\/$/, '');
             if (slug.includes('/anime/')) {
                 slug = slug.replace('/anime/', '');
@@ -1829,6 +2046,7 @@ async function searchAnime(query, page = 1) {
             });
         });
         
+        // Cek apakah ada next page
         const hasNextPage = $('.pagination .next, .wp-pagenavi .next').length > 0;
         
         return {
@@ -1867,16 +2085,26 @@ async function searchDonghua(query, page = 1) {
         
         console.log(`Searching donghua: ${searchUrl}`);
         
-        const response = await fetchWithProxy(searchUrl);
-        const $ = cheerio.load(response.data);
+        const { data } = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.google.com/'
+            }
+        });
+        
+        const $ = cheerio.load(data);
         const results = [];
         
+        // Selector untuk hasil pencarian
         $('.listupd article.bs').each((i, el) => {
             const $el = $(el);
             const link = $el.find('a').first();
             const href = link.attr('href') || '';
             const title = link.attr('title') || $el.find('.tt').text().trim();
             
+            // Ambil thumbnail
             let thumbnail = $el.find('img').attr('src') || $el.find('img').attr('data-src');
             if (thumbnail) {
                 if (thumbnail.includes('i0.wp.com') && !thumbnail.startsWith('http')) {
@@ -1886,15 +2114,21 @@ async function searchDonghua(query, page = 1) {
                 }
             }
             
+            // Ambil status (hotbadge, ongoing, completed)
             const isHot = $el.find('.hotbadge').length > 0;
             const status = $el.find('.status').text().trim() || 
                           (isHot ? 'Hot' : '');
             
+            // Ambil type
             const type = $el.find('.typez').text().trim() || 'Donghua';
+            
+            // Ambil episode info
             const episode = $el.find('.epx').text().trim() || '';
             
+            // Bersihkan slug (hapus bagian episode jika ada)
             let slug = href.replace(DONGHUA_BASE_URL, '').replace(/^\//, '').replace(/\/$/, '');
             
+            // Jika slug mengandung "episode", ambil bagian sebelum episode
             if (slug.includes('-episode-')) {
                 slug = slug.split('-episode-')[0];
             } else if (slug.includes('-ep-')) {
@@ -1915,8 +2149,10 @@ async function searchDonghua(query, page = 1) {
             });
         });
         
+        // Cek apakah ada next page
         const hasNextPage = $('.pagination .next, .page-numbers.next').length > 0;
         
+        // Ambil total pages jika ada
         let lastPage = page;
         $('.page-numbers:not(.next)').each((i, el) => {
             const pageNum = parseInt($(el).text().trim());
@@ -1955,6 +2191,7 @@ function mergeAndShuffleResults(animeResults, donghuaResults) {
     const merged = [];
     const maxLength = Math.max(animeResults.length, donghuaResults.length);
     
+    // Gabungkan dengan pola selang-seling
     for (let i = 0; i < maxLength; i++) {
         if (i < animeResults.length) {
             merged.push(animeResults[i]);
@@ -1964,7 +2201,9 @@ function mergeAndShuffleResults(animeResults, donghuaResults) {
         }
     }
     
+    // Acak sedikit agar tidak terlalu terprediksi, tapi tetap mempertahankan pola selang-seling secara umum
     for (let i = 0; i < merged.length; i += 2) {
+        // Sesekali tukar posisi jika memungkinkan
         if (i + 1 < merged.length && Math.random() > 0.7) {
             const temp = merged[i];
             merged[i] = merged[i + 1];
@@ -1982,6 +2221,7 @@ app.get('/api/search', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         
+        // Validasi query
         if (!query) {
             return res.status(400).json({
                 success: false,
@@ -1989,6 +2229,7 @@ app.get('/api/search', async (req, res) => {
             });
         }
         
+        // Validasi page
         if (page < 1) {
             return res.status(400).json({
                 success: false,
@@ -1996,14 +2237,19 @@ app.get('/api/search', async (req, res) => {
             });
         }
         
+        // Lakukan pencarian dari kedua sumber secara paralel
         const [animeResult, donghuaResult] = await Promise.all([
             searchAnime(query, page),
             searchDonghua(query, page)
         ]);
         
+        // Gabungkan dan acak hasil
         const mergedResults = mergeAndShuffleResults(animeResult.results, donghuaResult.results);
+        
+        // Potong sesuai limit
         const paginatedResults = mergedResults.slice(0, limit);
         
+        // Hitung total results (untuk estimasi)
         const totalAnime = animeResult.pagination.total_results;
         const totalDonghua = donghuaResult.pagination.total_results;
         const estimatedTotal = totalAnime + totalDonghua;
@@ -2039,10 +2285,6 @@ app.get('/api/search', async (req, res) => {
                 name: 'Multi-source',
                 sources: ['NontonAnimeID', 'Anichin'],
                 scraped_at: new Date().toISOString()
-            },
-            proxy: {
-                enabled: true,
-                url: PROXY_URL
             }
         });
         
@@ -2101,7 +2343,7 @@ app.get('/api/search/anime', async (req, res) => {
     }
 });
 
-// /api/search/donghua?q=ling
+// /api/search/donghua?q=ling atau /api/search/donghua?q=ling&page=4 dst
 app.get('/api/search/donghua', async (req, res) => {
     try {
         const query = req.query.q;
@@ -2145,53 +2387,12 @@ app.get('/api/search/donghua', async (req, res) => {
     }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-    res.json({
-        success: true,
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-        proxy: {
-            enabled: true,
-            url: PROXY_URL
-        },
-        sources: {
-            anime: ANIME_BASE_URL,
-            donghua: DONGHUA_BASE_URL
-        }
-    });
-});
 
-// Root endpoint
-app.get('/', (req, res) => {
-    res.json({
-        success: true,
-        message: 'API NontonAnimeID & Anichin dengan Proxy',
-        version: '1.0.0',
-        endpoints: {
-            anime: {
-                latest: '/api/anime/latest?page=1',
-                detail: '/api/anime/detail/:slug',
-                watch: '/api/anime/watch/:animeSlug/:episodeSlug?'
-            },
-            donghua: {
-                latest: '/api/donghua/latest?page=1',
-                detail: '/api/donghua/detail/:slug',
-                watch: '/api/donghua/watch/:slug'
-            },
-            search: {
-                all: '/api/search?q=ling',
-                anime: '/api/search/anime?q=ling',
-                donghua: '/api/search/donghua?q=ling'
-            },
-            health: '/api/health'
-        },
-        proxy: {
-            enabled: true,
-            url: PROXY_URL
-        }
-    });
-});
+
+
+
+
+
 
 // Handle 404
 app.use((req, res) => {
@@ -2205,8 +2406,6 @@ app.use((req, res) => {
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
-        console.log(`Proxy enabled: true`);
-        console.log(`Proxy URL: ${PROXY_URL}`);
     });
 }
 
