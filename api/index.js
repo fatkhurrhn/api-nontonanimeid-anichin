@@ -2162,37 +2162,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Root endpoint
-app.get('/', (req, res) => {
-    res.json({
-        success: true,
-        message: 'API NontonAnimeID & Anichin dengan Proxy',
-        version: '1.0.0',
-        endpoints: {
-            anime: {
-                latest: '/api/anime/latest?page=1',
-                detail: '/api/anime/detail/:slug',
-                watch: '/api/anime/watch/:animeSlug/:episodeSlug?'
-            },
-            donghua: {
-                latest: '/api/donghua/latest?page=1',
-                detail: '/api/donghua/detail/:slug',
-                watch: '/api/donghua/watch/:slug'
-            },
-            search: {
-                all: '/api/search?q=ling',
-                anime: '/api/search/anime?q=ling',
-                donghua: '/api/search/donghua?q=ling'
-            },
-            health: '/api/health'
-        },
-        proxy: {
-            enabled: true,
-            url: PROXY_URL
-        }
-    });
-});
-
 // Handle 404
 app.use((req, res) => {
     res.status(404).json({
